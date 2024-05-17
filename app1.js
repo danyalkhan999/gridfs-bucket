@@ -5,8 +5,9 @@ const fs = require('fs');
 
 const app = express();
 
-// Configure Multer for file uploads
-const upload = multer({ dest: 'uploads/' }); // Adjust 'uploads/' as needed
+// Configure Multer for storage and file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ storage }); // Adjust 'uploads/' as needed
 
 // Replace with your MongoDB connection URI
 const uri = "mongodb://localhost/";
@@ -25,36 +26,48 @@ async function connectToDatabase() {
   }
 }
 
+async function closeDatabaseConnection(client) {
+  try {
+    await client.close();
+    console.log("MongoDB connection closed");
+  } catch (error) {
+    console.error("Failed to close MongoDB connection", error);
+  }
+}
+
 async function uploadToGridFS(file, metadata) {
   const client = await connectToDatabase();
   try {
     const db = client.db(dbName);
-    const bucket = new GridFSBucket(db, { bucketName: collectionName });
+    const bucket = new GridFSBucket(db, { bucketName: "uploads" });
 
     const uploadStream = bucket.openUploadStream(file.originalname, { metadata });
-    const fileStream = fs.createReadStream(file.path); // Use file path for file system storage
+    const bufferStream = require('stream').Readable.from(file.buffer);
 
     const uploadPromise = new Promise((resolve, reject) => {
-      fileStream.pipe(uploadStream)
+      bufferStream.pipe(uploadStream)
         .on('error', (err) => {
           reject(err);
-          client.close();
+          closeDatabaseConnection(client); // Close connection on error
         })
         .on('finish', () => {
           resolve(uploadStream.id);
-          client.close();
+          closeDatabaseConnection(client); // Close connection on finish
         });
     });
 
     return uploadPromise;
   } catch (error) {
-    client.close();
+    closeDatabaseConnection(client); // Ensure connection is closed on catch
     throw error;
   }
 }
 
 // Upload route
 app.post('/upload', upload.single('file'), async (req, res) => {
+  console.log("file", req.file);
+
+  console.log("body", req.body);
   try {
     if (!req.file) {
       throw new Error('No file uploaded'); // Handle missing file
