@@ -1,18 +1,18 @@
 const express = require('express');
 const multer = require('multer');
 const { MongoClient, GridFSBucket, ObjectId } = require('mongodb');
-const fs = require('fs');
+const stream = require('stream');
 
 const app = express();
 
-// Configure Multer for storage and file uploads
+// Configure Multer for memory storage
 const storage = multer.memoryStorage();
-const upload = multer({ storage }); // Adjust 'uploads/' as needed
+const upload = multer({ storage });
 
 // Replace with your MongoDB connection URI
 const uri = "mongodb://localhost/";
 const dbName = "upload-test";
-const collectionName = "fs"; // GridFS collection name
+const collectionName = "uploads"; // GridFS collection name
 
 async function connectToDatabase() {
   const client = new MongoClient(uri);
@@ -39,10 +39,10 @@ async function uploadToGridFS(file, metadata) {
   const client = await connectToDatabase();
   try {
     const db = client.db(dbName);
-    const bucket = new GridFSBucket(db, { bucketName: "uploads" });
+    const bucket = new GridFSBucket(db, { bucketName: collectionName });
 
     const uploadStream = bucket.openUploadStream(file.originalname, { metadata });
-    const bufferStream = require('stream').Readable.from(file.buffer);
+    const bufferStream = stream.Readable.from(file.buffer);
 
     const uploadPromise = new Promise((resolve, reject) => {
       bufferStream.pipe(uploadStream)
@@ -51,7 +51,7 @@ async function uploadToGridFS(file, metadata) {
           closeDatabaseConnection(client); // Close connection on error
         })
         .on('finish', () => {
-          resolve(uploadStream.id);
+          resolve(uploadStream);
           closeDatabaseConnection(client); // Close connection on finish
         });
     });
@@ -65,22 +65,31 @@ async function uploadToGridFS(file, metadata) {
 
 // Upload route
 app.post('/upload', upload.single('file'), async (req, res) => {
-  console.log("file", req.file);
-
-  console.log("body", req.body);
   try {
     if (!req.file) {
       throw new Error('No file uploaded'); // Handle missing file
     }
-    const fileId = await uploadToGridFS(req.file, req.body); // Access additional data from req.body
-    res.json({ message: 'File uploaded successfully!', fileId });
+    const uploadStream = await uploadToGridFS(req.file, req.body); // Access additional data from req.body
+
+    // Add GridFS-specific details to req.file.grid
+    req.file.grid = {
+      _id: uploadStream.id,
+      filename: uploadStream.filename,
+      metadata: uploadStream.options.metadata,
+      bucketName: collectionName,
+    };
+
+    res.json({
+      message: 'File uploaded successfully!',
+      file: req.file,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Error uploading file' });
   }
 });
 
-// get all files
+// Get all files
 app.get('/files', async (req, res) => {
   const client = await connectToDatabase();
   try {
@@ -96,8 +105,7 @@ app.get('/files', async (req, res) => {
   }
 });
 
-
-// route to get files by id
+// Get file by id
 app.get('/files/:id', async (req, res) => {
   const client = await connectToDatabase();
   try {
